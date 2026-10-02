@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ragcache dashboard</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1a1a1a; --card:#fff; --muted:#666; --line:#e2e2e2; --accent:#2457d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --fg:#e8e8e8; --card:#1d2026; --muted:#9aa0a6; --line:#2e323a; --accent:#7aa2ff; }
+  }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:960px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:20px; margin:0 0 16px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  input, select, button { font:inherit; padding:6px 10px; border:1px solid var(--line);
+    border-radius:6px; background:var(--card); color:var(--fg); }
+  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .card .v { font-size:22px; font-weight:600; }
+  .card .l { color:var(--muted); font-size:13px; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; background:var(--card);
+    border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { text-align:right; padding:8px 12px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  #err { color:#c0392b; margin:8px 0; min-height:1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ragcache: cost and latency</h1>
+  <div class="bar">
+    <input id="key" type="password" placeholder="admin API key" autocomplete="off">
+    <select id="win">
+      <option value="">all time</option>
+      <option value="3600">last hour</option>
+      <option value="86400">last 24 h</option>
+      <option value="604800">last 7 days</option>
+    </select>
+    <button id="go">Load</button>
+  </div>
+  <div id="err" role="alert"></div>
+  <div class="grid" id="cards"></div>
+  <table id="routes" hidden>
+    <thead><tr><th>Route</th><th>Requests</th><th>Cost (USD)</th><th>p50 ms</th><th>p95 ms</th><th>p99 ms</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 0) => (n == null ? "n/a" : Number(n).toFixed(d));
+const pct = (n) => (n == null ? "n/a" : (n * 100).toFixed(1) + "%");
+$("key").value = sessionStorage.getItem("rc_key") || "";
+
+async function load() {
+  $("err").textContent = "";
+  const key = $("key").value;
+  sessionStorage.setItem("rc_key", key);
+  const w = $("win").value;
+  const res = await fetch("/v1/metrics/summary" + (w ? "?window_seconds=" + w : ""), {
+    headers: { "x-api-key": key },
+  });
+  if (!res.ok) { $("err").textContent = "Request failed: HTTP " + res.status; return; }
+  const s = await res.json();
+  const cards = [
+    ["Requests", s.requests], ["Errors", s.errors], ["Cache hit rate", pct(s.cache_hit_rate)],
+    ["Escalation rate", pct(s.escalation_rate)], ["LLM cost (USD)", fmt(s.cost_usd, 4)],
+    ["Cost avoided by cache (USD)", fmt(s.saved_cost_usd, 4)],
+    ["p95 latency (ms)", fmt(s.latency_ms.p95)], ["p50 latency (ms)", fmt(s.latency_ms.p50)],
+  ];
+  $("cards").innerHTML = cards.map(([l, v]) =>
+    `<div class="card"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  const body = $("routes").querySelector("tbody");
+  body.innerHTML = Object.entries(s.by_route).map(([name, r]) =>
+    `<tr><td>${name}</td><td>${r.requests}</td><td>${fmt(r.cost_usd, 4)}</td>` +
+    `<td>${fmt(r.latency_ms.p50)}</td><td>${fmt(r.latency_ms.p95)}</td><td>${fmt(r.latency_ms.p99)}</td></tr>`
+  ).join("");
+  $("routes").hidden = false;
+}
+$("go").addEventListener("click", load);
+</script>
+</body>
+</html>
