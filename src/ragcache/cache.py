@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .db import Database
 from .embeddings import from_blob, to_blob
@@ -52,7 +53,7 @@ class LookupResult:
 
 @dataclass
 class _Namespace:
-    mat: np.ndarray
+    mat: NDArray[np.float32]
     ids: list[int]
     signatures: list[str]
     expires: list[float]
@@ -92,7 +93,7 @@ class SemanticCache:
         self,
         collection_id: int,
         version: int,
-        query_vec: np.ndarray,
+        query_vec: NDArray[np.float32],
         signature: str,
         *,
         threshold: float,
@@ -150,7 +151,7 @@ class SemanticCache:
         collection_id: int,
         version: int,
         query_text: str,
-        query_vec: np.ndarray,
+        query_vec: NDArray[np.float32],
         signature: str,
         *,
         answer: str,

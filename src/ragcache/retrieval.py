@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .db import Database, transaction
 from .embeddings import Embedder, from_blob, to_blob
@@ -117,9 +118,11 @@ class Retriever:
     def __init__(self, db: Database) -> None:
         self._db = db
         self._lock = threading.Lock()
-        self._mats: dict[int, tuple[int, np.ndarray, list[sqlite3.Row]]] = {}
+        self._mats: dict[int, tuple[int, NDArray[np.float32], list[sqlite3.Row]]] = {}
 
-    def _load(self, collection_id: int, version: int) -> tuple[np.ndarray, list[sqlite3.Row]]:
+    def _load(
+        self, collection_id: int, version: int
+    ) -> tuple[NDArray[np.float32], list[sqlite3.Row]]:
         with self._lock:
             cached = self._mats.get(collection_id)
             if cached and cached[0] == version:
@@ -139,7 +142,7 @@ class Retriever:
         return mat, rows
 
     def search(
-        self, collection_id: int, version: int, query_vec: np.ndarray, k: int
+        self, collection_id: int, version: int, query_vec: NDArray[np.float32], k: int
     ) -> list[RetrievedChunk]:
         mat, rows = self._load(collection_id, version)
         if len(rows) == 0:

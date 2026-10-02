@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
+from numpy.typing import NDArray
 
 from . import models as model_registry
 from . import runtime_config
@@ -316,7 +317,7 @@ class Pipeline:
         cid: int,
         version: int,
         query: str,
-        qvec: np.ndarray,
+        qvec: NDArray[np.float32],
         sig: str,
         cfg: runtime_config.RuntimeConfig,
         started: float,
