@@ -124,7 +124,7 @@ side): error rate > threshold, escalation rate trending up (router too aggressiv
 
 Unit and integration tests with test doubles confined to `tests/`; one real-embedding test
 (`-m embedding`); an offline evaluation (`eval-threshold`) on a public labelled dataset. **Not covered:**
-live provider calls, load/performance tests, multi-process behaviour.
+live provider calls (clients are tested against a local server imitating the wire formats), load/performance tests, multi-process behaviour.
 
 ## 10. Deployment
 

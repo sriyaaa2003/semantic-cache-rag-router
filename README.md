@@ -120,13 +120,14 @@ What this says:
 
 - **Semantic caching with a small embedding model is a precision problem.** Even at 0.96, about 1 in 9 served hits is a false duplicate by QQP's labels. QQP labels are strict and somewhat noisy, and a wrong hit in a narrow support knowledge base is often milder than in QQP's open domain, but the direction is clear: do not run a low threshold.
 - **The numbers/negation guard helps modestly**: 0.4 to 1.2 points of precision and 7 to 12% fewer false hits at the same threshold, because most QQP false duplicates differ in meaning rather than in digits.
+- **The consequence is a real trade-off:** in a local smoke test with this model, "How long does shipping take?" vs "how many days until my order is delivered by standard shipping" scored 0.83, so at 0.95 the cache mainly serves near-verbatim repeats and normalised variants, not free paraphrases. Lowering the threshold to catch more paraphrases costs precision, exactly as the table shows. Pick the point your use case can afford.
 - The default is therefore **0.95**. If you need more precision than the embedding alone gives, add a second-stage verifier (cross-encoder or a small-LLM judge) before serving a hit. That is on the roadmap and not implemented.
 
 Run it on *your* queries before trusting any threshold, including this one: `ragcache eval-threshold your_pairs.jsonl --min-precision 0.98`.
 
 ### What is tested
 
-47 automated tests (`pytest`):
+58 automated tests (`pytest`):
 
 - cache hit, miss, guard, expiry, eviction and persistence across restart;
 - corpus-version invalidation;
@@ -138,13 +139,14 @@ Run it on *your* queries before trusting any threshold, including this one: `rag
 - total failure returns 502 and logs an `error` row;
 - concurrent single-flight;
 - runtime-config validation;
-- authentication on every admin route, metrics and the dashboard.
+- authentication on every admin route, metrics and the dashboard;
+- the real Anthropic and OpenAI-compatible clients against a local HTTP server speaking each wire format (request shape, auth headers, response parsing, 429/5xx retryable vs 4xx non-retryable, connection failure).
 
 One test uses the real embedding model (`pytest -m embedding`). The fake LLM and a hashing embedder exist **only** under `tests/`.
 
 ### What is not verified
 
-- **Live LLM calls.** The Anthropic and OpenAI-compatible clients follow the public API shapes and are exercised in tests only through the provider interface. They have not been run against a real endpoint here. Treat the first run as an integration test.
+- **Live LLM calls.** The Anthropic and OpenAI-compatible clients are tested against local servers that imitate the wire formats, which proves request shape and error handling but not a provider's real behaviour. They have not been run against a real endpoint here. Treat the first run as an integration test.
 - **Cost and p95-latency savings on real traffic**, and **answer quality under routing.** Measuring quality needs labelled answers and an LLM judge or human review; the request log gives you everything else.
 
 ## Limitations and roadmap
