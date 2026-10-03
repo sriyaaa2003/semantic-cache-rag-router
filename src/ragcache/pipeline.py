@@ -83,13 +83,29 @@ def _context_block(
 _CITATION = re.compile(r"\[(\d+)\]")
 
 
-def validate_answer(text: str, n_passages: int, abstain_token: str) -> tuple[bool, bool, list[int]]:
-    """Returns (valid, abstained, cited_passage_numbers). Deterministic, no LLM involved."""
+def _squash(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def validate_answer(
+    text: str, n_passages: int, abstain_token: str, min_chars: int = 12
+) -> tuple[bool, bool, list[int]]:
+    """Returns (valid, abstained, cited_passage_numbers). Deterministic, no LLM involved.
+
+    * Abstention is recognised leniently (case, spaces, underscores and trailing punctuation are
+      ignored): small models routinely write "INSUFFICIENT CONTEXT" for the requested token.
+    * Otherwise the answer must cite only supplied passages **and** contain real text besides the
+      citation markers; "[1]" on its own is rejected.
+    """
     stripped = text.strip()
-    if stripped == abstain_token:
+    squashed = _squash(stripped)
+    if squashed and squashed.startswith(_squash(abstain_token)):
         return True, True, []
     cited = sorted({int(m) for m in _CITATION.findall(stripped)})
     if not cited or any(c < 1 or c > n_passages for c in cited):
+        return False, False, cited
+    content = _CITATION.sub("", stripped)
+    if sum(ch.isalpha() for ch in content) < min_chars:
         return False, False, cited
     return True, False, cited
 
@@ -373,7 +389,9 @@ class Pipeline:
         out_tok += res.output_tokens
         cost += spec.cost_usd(res.input_tokens, res.output_tokens)
         gen_ms += res.latency_ms
-        valid, abstained, cited = validate_answer(res.text, len(used), cfg.abstain_token)
+        valid, abstained, cited = validate_answer(
+            res.text, len(used), cfg.abstain_token, cfg.min_answer_chars
+        )
 
         if not valid and cfg.escalate_on_invalid_answer and spec.tier != "large":
             escalated = True
@@ -383,11 +401,17 @@ class Pipeline:
             out_tok += res.output_tokens
             cost += spec.cost_usd(res.input_tokens, res.output_tokens)
             gen_ms += res.latency_ms
-            valid, abstained, cited = validate_answer(res.text, len(used), cfg.abstain_token)
+            valid, abstained, cited = validate_answer(
+                res.text, len(used), cfg.abstain_token, cfg.min_answer_chars
+            )
 
         if not valid:
             # Never return or cache an answer that failed validation.
-            raise PipelineError("model produced an answer without valid citations", status=502)
+            snippet = " ".join(res.text.split())[:160]
+            raise PipelineError(
+                f"model produced an answer without valid citations (output began: {snippet!r})",
+                status=502,
+            )
 
         citations = [
             {

@@ -68,6 +68,7 @@ class RuntimeConfig(BaseModel):
     # --- generation ---
     max_output_tokens: int = Field(600, ge=16)
     temperature: float = Field(0.0, ge=0.0, le=2.0)
+    min_answer_chars: int = Field(12, ge=0)  # letters required besides citation markers
     abstain_token: str = "INSUFFICIENT_CONTEXT"  # noqa: S105 (sentinel string, not a secret)
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     # --- logging ---

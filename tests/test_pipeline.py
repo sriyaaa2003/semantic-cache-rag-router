@@ -155,8 +155,30 @@ def test_concurrent_identical_queries_cost_one_llm_call(pipeline, corpus, provid
 
 
 def test_validate_answer_rules():
-    assert validate_answer("Yes [1] and [2].", 2, "ABSTAIN") == (True, False, [1, 2])
+    assert validate_answer("Shipping takes five days [1] and [2].", 2, "ABSTAIN") == (
+        True,
+        False,
+        [1, 2],
+    )
     assert validate_answer("ABSTAIN", 2, "ABSTAIN") == (True, True, [])
-    assert validate_answer("Yes [3].", 2, "ABSTAIN")[0] is False  # cites a missing passage
+    assert (
+        validate_answer("Shipping takes five days [3].", 2, "ABSTAIN")[0] is False
+    )  # cites a missing passage
     assert validate_answer("Yes.", 2, "ABSTAIN")[0] is False
-    assert validate_answer("Yes [0].", 2, "ABSTAIN")[0] is False
+    assert validate_answer("Shipping takes five days [0].", 2, "ABSTAIN")[0] is False
+
+
+def test_validate_answer_is_lenient_about_abstention_and_rejects_empty_answers():
+    assert validate_answer("INSUFFICIENT CONTEXT", 2, "INSUFFICIENT_CONTEXT") == (True, True, [])
+    assert validate_answer("insufficient_context.", 2, "INSUFFICIENT_CONTEXT")[1] is True
+    assert validate_answer("[1]", 2, "INSUFFICIENT_CONTEXT")[0] is False  # citation with no content
+    assert validate_answer("[1] ok", 2, "INSUFFICIENT_CONTEXT")[0] is False
+    assert validate_answer("[1] Shipping takes five days.", 2, "INSUFFICIENT_CONTEXT")[0] is True
+
+
+def test_rejected_output_is_visible_in_the_error_for_debugging(pipeline, corpus, providers):
+    for p in providers.values():
+        p.script = lambda user: "totally uncited rambling"
+    with pytest.raises(PipelineError) as exc:
+        pipeline.query("kb", "how long does shipping take")
+    assert "totally uncited rambling" in str(exc.value)

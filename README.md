@@ -6,7 +6,7 @@ A RAG service that decides, per request, whether it needs an LLM at all and, if 
 2. **Cost-aware routing.** Misses go to a **small** or **large** model tier chosen by an inspectable, configurable score (query length, comparison cues, weak retrieval, clause count). If a small model returns an answer without valid citations, the request **escalates** to the large tier. Provider failures fail over to the next model.
 3. **Per-request accounting and a dashboard.** Every request records tokens, cost (from a price table you control), latency split into retrieval and generation, cache result, route and escalation. `/dashboard` shows hit rate, cost, **cost avoided by the cache**, and p50/p95/p99 latency by route.
 
-> **Status: engineering-complete, not yet measured on production traffic.** The cache-threshold numbers below were measured on a public benchmark. The end-to-end *cost and p95-latency reduction on real traffic* is deliberately **not** claimed: it depends on your query distribution and model prices, and it needs an LLM key that was not available when this was built. The request log, replay-friendly API and dashboard exist so you can measure it on your own data.
+> **Status: engineering-complete, not yet measured on production traffic.** The cache-threshold numbers below were measured on a public benchmark. The end-to-end *cost and p95-latency reduction on real traffic* is deliberately **not** claimed: it depends on your query distribution and model prices, and the only live model available when this was built was a 3-billion-parameter local model on a laptop CPU (see [Live test](#live-test-local-model)). The request log, replay-friendly API and dashboard exist so you can measure it on your own data.
 
 ```mermaid
 flowchart LR
@@ -125,9 +125,21 @@ What this says:
 
 Run it on *your* queries before trusting any threshold, including this one: `ragcache eval-threshold your_pairs.jsonl --min-precision 0.98`.
 
+### Live test (local model)
+
+One real end-to-end run: this service against **Ollama serving `llama3.2:3b`** (CPU only, a laptop with an integrated GPU), real embeddings, 4 short documents, 15 queries, both tiers pointed at the same model with prices set to 0.
+
+- The real OpenAI-compatible client, retrieval, routing, caching, validation and request log worked together.
+- **Cache hits** (repeats and a case variant) were served in about **7 ms median, against about 4.9 s median for a generated answer** on this machine. Hit rate on this tiny repeated set: 4 of 12 successful requests; it says nothing about real traffic.
+- **The live run found two real bugs, now fixed and covered by tests:** the model wrote `INSUFFICIENT CONTEXT` (a space) instead of the requested `INSUFFICIENT_CONTEXT`, which made unanswerable questions fail instead of abstaining; and answers that were only `[1]` were accepted as valid. Abstention matching is now lenient, answers need real text besides citation markers (`min_answer_chars`), and a rejected answer's first characters are recorded in the error for debugging.
+- **After the fixes, 3 of the 15 requests still returned 502**: two where the 3B model answered with just `[1]`, and one cut off by the 120-token cap I set for the test before it reached a citation. That is the validator doing its job on a weak model, not a hidden success.
+- **Escalation to the large tier was not exercised live** because both tiers were the same model.
+
+This is a sanity check of the integration, not an evaluation: 15 queries and a small model say nothing about answer quality, cost savings or hosted-model latency.
+
 ### What is tested
 
-58 automated tests (`pytest`):
+60 automated tests (`pytest`):
 
 - cache hit, miss, guard, expiry, eviction and persistence across restart;
 - corpus-version invalidation;
@@ -146,7 +158,7 @@ One test uses the real embedding model (`pytest -m embedding`). The fake LLM and
 
 ### What is not verified
 
-- **Live LLM calls.** The Anthropic and OpenAI-compatible clients are tested against local servers that imitate the wire formats, which proves request shape and error handling but not a provider's real behaviour. They have not been run against a real endpoint here. Treat the first run as an integration test.
+- **The Anthropic client against the real API.** It is tested against a local server imitating the wire format only. The OpenAI-compatible client has been run live against Ollama (below).
 - **Cost and p95-latency savings on real traffic**, and **answer quality under routing.** Measuring quality needs labelled answers and an LLM judge or human review; the request log gives you everything else.
 
 ## Limitations and roadmap
