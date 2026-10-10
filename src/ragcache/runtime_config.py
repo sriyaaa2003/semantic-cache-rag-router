@@ -34,6 +34,11 @@ class RuntimeConfig(BaseModel):
     cache_ttl_seconds: int = Field(86_400, gt=0)
     cache_max_entries_per_namespace: int = Field(10_000, gt=0)
     cache_guard_enabled: bool = True
+    # --- second-stage hit verifier (cross-encoder) ---
+    verifier_enabled: bool = False
+    verifier_candidate_threshold: float = Field(0.88, ge=0.0, le=1.0)  # replaces the threshold above
+    verifier_min_score: float = Field(0.5, ge=0.0, le=1.0)
+    verifier_max_candidates: int = Field(3, ge=1, le=20)
     negation_terms: list[str] = [
         "not",
         "no",

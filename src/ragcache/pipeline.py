@@ -32,6 +32,7 @@ from .embeddings import Embedder
 from .llm import LLMError, LLMProvider, LLMResult, build_provider
 from .models import ModelSpec
 from .retrieval import RetrievedChunk, Retriever
+from .verifier import CrossEncoderVerifier, Verifier
 from .router import RouteDecision, decide
 
 log = logging.getLogger("ragcache")
@@ -141,8 +142,10 @@ class Pipeline:
         settings: Settings,
         *,
         provider_factory: ProviderFactory | None = None,
+        verifier: Verifier | None = None,
     ) -> None:
         self.db = db
+        self._verifier = verifier
         self.embedder = embedder
         self.settings = settings
         self.cache = SemanticCache(db)
@@ -250,6 +253,38 @@ class Pipeline:
             raise PipelineError("internal error", status=500) from exc
         return result
 
+    def _lookup(
+        self,
+        cid: int,
+        version: int,
+        qvec: NDArray[np.float32],
+        sig: str,
+        query: str,
+        cfg: runtime_config.RuntimeConfig,
+    ) -> LookupResult:
+        if not cfg.verifier_enabled:
+            return self.cache.lookup(
+                cid,
+                version,
+                qvec,
+                sig,
+                threshold=cfg.cache_similarity_threshold,
+                guard=cfg.cache_guard_enabled,
+            )
+        if self._verifier is None:
+            self._verifier = CrossEncoderVerifier()
+        verifier = self._verifier
+        return self.cache.lookup(
+            cid,
+            version,
+            qvec,
+            sig,
+            threshold=cfg.verifier_candidate_threshold,
+            guard=cfg.cache_guard_enabled,
+            verify=lambda cached: verifier.score(query, cached) >= cfg.verifier_min_score,
+            max_verifications=cfg.verifier_max_candidates,
+        )
+
     def _run(
         self,
         request_id: str,
@@ -265,26 +300,12 @@ class Pipeline:
         flight_key = f"{cid}:{version}:{hashlib.sha256(query.lower().encode()).hexdigest()}"
         leader = True
         if cfg.cache_enabled:
-            lookup = self.cache.lookup(
-                cid,
-                version,
-                qvec,
-                sig,
-                threshold=cfg.cache_similarity_threshold,
-                guard=cfg.cache_guard_enabled,
-            )
+            lookup = self._lookup(cid, version, qvec, sig, query, cfg)
             if lookup.hit is None:
                 leader, event = self._flight.acquire(flight_key)
                 if not leader:  # an identical query is already being answered: wait, then re-check
                     event.wait(timeout=self.settings.llm_timeout_seconds * 2)
-                    lookup = self.cache.lookup(
-                        cid,
-                        version,
-                        qvec,
-                        sig,
-                        threshold=cfg.cache_similarity_threshold,
-                        guard=cfg.cache_guard_enabled,
-                    )
+                    lookup = self._lookup(cid, version, qvec, sig, query, cfg)
                     leader = lookup.hit is None
             if lookup.hit is not None:
                 hit = lookup.hit

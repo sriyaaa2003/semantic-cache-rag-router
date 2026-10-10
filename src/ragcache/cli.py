@@ -118,6 +118,28 @@ def _cmd_eval_threshold(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval_verifier(args: argparse.Namespace) -> int:
+    from .eval_threshold import evaluate_verifier, load_pairs
+    from .verifier import CrossEncoderVerifier
+
+    pairs = load_pairs(args.pairs)
+    if args.limit:
+        pairs = pairs[: args.limit]
+    embedder = FastEmbedEmbedder(get_settings().embedding_model)
+    rows = evaluate_verifier(
+        pairs, embedder, CrossEncoderVerifier(args.model), args.candidate, args.min_scores
+    )
+    print(f"{len(pairs)} labelled pairs, {sum(1 for p in pairs if p[2])} duplicates")
+    print(f"candidates: similarity >= {args.candidate} and guard ok; verifier: {args.model}\n")
+    print("min_score precision recall    f1  served false_hits")
+    for r in rows:
+        print(
+            f"{r.min_score:9.2f} {r.precision:9.3f} {r.recall:6.3f} {r.f1:5.3f} "
+            f"{r.hits:7d} {r.false_hits:10d}"
+        )
+    return 0
+
+
 def _frange(start: float, stop: float, step: float) -> list[float]:
     out, x = [], start
     while x <= stop + 1e-9:
@@ -178,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--step", type=float, default=0.02)
     e.add_argument("--min-precision", type=float, default=0.95)
     e.set_defaults(func=_cmd_eval_threshold)
+
+    v = sub.add_parser("eval-verifier", help="evaluate the cross-encoder hit verifier on labelled pairs")
+    v.add_argument("pairs", help="JSONL with q1, q2, is_duplicate")
+    v.add_argument("--limit", type=int)
+    v.add_argument("--candidate", type=float, default=0.88)
+    v.add_argument("--min-scores", type=float, nargs="+", default=[0.5, 0.7, 0.9, 0.95, 0.99])
+    v.add_argument("--model", default="cross-encoder/quora-distilroberta-base")
+    v.set_defaults(func=_cmd_eval_verifier)
 
     args = p.parse_args(argv)
     return int(args.func(args))

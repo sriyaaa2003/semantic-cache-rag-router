@@ -15,6 +15,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -98,6 +99,8 @@ class SemanticCache:
         *,
         threshold: float,
         guard: bool,
+        verify: Callable[[str], bool] | None = None,
+        max_verifications: int = 3,
         now: float | None = None,
     ) -> LookupResult:
         now = time.time() if now is None else now
@@ -112,6 +115,7 @@ class SemanticCache:
             best = float(sims[order[0]])
             guard_rejected = False
             chosen: tuple[int, float] | None = None
+            verified = 0
             for idx in order:
                 sim = float(sims[idx])
                 if sim < threshold:
@@ -119,6 +123,16 @@ class SemanticCache:
                 if guard and ns.signatures[idx] != signature:
                     guard_rejected = True
                     continue
+                if verify is not None:
+                    if verified >= max_verifications:
+                        break
+                    verified += 1
+                    cached = self._db.conn.execute(
+                        "SELECT query_text FROM cache_entries WHERE id=?", (ns.ids[idx],)
+                    ).fetchone()
+                    if cached is None or not verify(cached["query_text"]):
+                        guard_rejected = True
+                        continue
                 chosen = (ns.ids[idx], sim)
                 break
         if chosen is None:

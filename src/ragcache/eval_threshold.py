@@ -71,3 +71,52 @@ def evaluate(
 def recommend(rows: list[ThresholdRow], min_precision: float) -> ThresholdRow | None:
     ok = [r for r in rows if r.guard and r.precision >= min_precision]
     return max(ok, key=lambda r: (r.recall, r.threshold)) if ok else None
+
+
+@dataclass(frozen=True)
+class VerifierRow:
+    candidate_threshold: float
+    min_score: float
+    precision: float
+    recall: float
+    f1: float
+    hits: int
+    false_hits: int
+
+
+def evaluate_verifier(
+    pairs: list[tuple[str, str, bool]],
+    embedder: Embedder,
+    verifier: object,
+    candidate_threshold: float,
+    min_scores: list[float],
+    *,
+    batch_size: int = 256,
+) -> list[VerifierRow]:
+    """Two-stage cache: embedding similarity >= ``candidate_threshold`` (and the number/negation
+    guard) picks candidates, then the verifier must score them >= ``min_score``.
+    Recall is measured against all duplicate pairs in ``pairs``."""
+    negs = RuntimeConfig().negation_terms
+    texts = sorted({t for a, b, _ in pairs for t in (a, b)})
+    vecs = np.concatenate(
+        [embedder.embed(texts[i : i + batch_size]) for i in range(0, len(texts), batch_size)]
+    )
+    index = {t: i for i, t in enumerate(texts)}
+    sims = np.array([float(vecs[index[a]] @ vecs[index[b]]) for a, b, _ in pairs])
+    labels = np.array([d for _, _, d in pairs])
+    guard_ok = np.array([query_signature(a, negs) == query_signature(b, negs) for a, b, _ in pairs])
+    cand = np.where((sims >= candidate_threshold) & guard_ok)[0]
+    scores = np.zeros(len(pairs))
+    scores[cand] = verifier.score_many([(pairs[i][0], pairs[i][1]) for i in cand])  # type: ignore[attr-defined]
+    rows: list[VerifierRow] = []
+    for m in min_scores:
+        pred = np.zeros(len(pairs), dtype=bool)
+        pred[cand] = scores[cand] >= m
+        tp = int((pred & labels).sum())
+        fp = int((pred & ~labels).sum())
+        fn = int((~pred & labels).sum())
+        precision = tp / (tp + fp) if tp + fp else 1.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        rows.append(VerifierRow(candidate_threshold, m, precision, recall, f1, tp + fp, fp))
+    return rows

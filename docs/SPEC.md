@@ -165,5 +165,5 @@ different database.
 
 ## 13. Definition of done and current status
 
-Implemented and tested: F1–F10, N1–N4. **Not implemented / not verified:** second-stage hit verifier,
+Implemented and tested: F1–F10, N1–N4. **Not implemented / not verified:** (second-stage hit verifier is now implemented: `verifier.py`, `ragcache eval-verifier`),
 multi-replica deployment, live LLM integration test, answer-quality evaluation, load testing.

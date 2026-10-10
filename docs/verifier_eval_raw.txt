@@ -1,0 +1,23 @@
+INFO:sentence_transformers.base.model:No device provided, using cpu
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/cross-encoder/quora-distilroberta-base/resolve/main/modules.json "HTTP/1.1 404 Not Found"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO:sentence_transformers.base.model:No modules.json found for cross-encoder/quora-distilroberta-base, initializing a new CrossEncoder model.
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/cross-encoder/quora-distilroberta-base/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/105 [00:00<?, ?it/s]Loading weights:  34%|###4      | 36/105 [00:00<00:00, 334.52it/s]Loading weights: 100%|##########| 105/105 [00:00<00:00, 775.03it/s]
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/cross-encoder/quora-distilroberta-base/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+40430 labelled pairs, 14885 duplicates
+candidates: similarity >= 0.88 and guard ok; verifier: cross-encoder/quora-distilroberta-base
+
+min_score precision recall    f1  served false_hits
+     0.50     0.908  0.589 0.715    9656        885
+     0.70     0.917  0.579 0.709    9390        779
+     0.90     0.934  0.536 0.682    8545        560
+     0.95     0.947  0.479 0.637    7536        399
+     0.99     0.977  0.263 0.414    4006         92
