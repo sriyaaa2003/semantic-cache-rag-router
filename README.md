@@ -1,185 +1,50 @@
 # ragcache: semantic caching and cost-aware routing for RAG
 
-A RAG service that decides, per request, whether it needs an LLM at all and, if it does, which one.
+A RAG service that decides for each question whether it needs an LLM at all, and if it does, which size of model to use.
 
-1. **Semantic cache.** Answers are cached by query *embedding*, so "how long does shipping take" and "how many days for delivery" can share one answer. A guard stops near-misses that differ in a number or a negation ("refund within 30 days" vs "60 days"). Re-ingesting documents invalidates the affected answers automatically.
-2. **Cost-aware routing.** Misses go to a **small** or **large** model tier chosen by an inspectable, configurable score (query length, comparison cues, weak retrieval, clause count). If a small model returns an answer without valid citations, the request **escalates** to the large tier. Provider failures fail over to the next model.
-3. **Per-request accounting and a dashboard.** Every request records tokens, cost (from a price table you control), latency split into retrieval and generation, cache result, route and escalation. `/dashboard` shows hit rate, cost, **cost avoided by the cache**, and p50/p95/p99 latency by route.
+## What I did
+- Built a **semantic cache** that stores answers by the embedding of the question, so differently worded questions can share an answer. A guard stops matches that differ in a number or a negation ("30 days" vs "60 days"). Re-ingesting a document automatically invalidates the answers that depended on it.
+- Built a **router** that sends a cache miss to a small or large model using a score from query length, comparison words, weak retrieval and number of clauses. If the small model's answer has no valid citations, the request goes to the large model. If a provider fails, it moves to the next model.
+- Logged tokens, cost (from a price table), latency split into retrieval and generation, cache result and route for every request, and built a `/dashboard` with hit rate, cost, cost saved by the cache and p50/p95/p99 latency.
+- Made identical questions that arrive at the same time share one LLM call.
+- Measured the best cache threshold on 40,430 labelled question pairs from Quora Question Pairs.
 
-> **Status: engineering-complete, not yet measured on production traffic.** The cache-threshold numbers below were measured on a public benchmark. The end-to-end *cost and p95-latency reduction on real traffic* is deliberately **not** claimed: it depends on your query distribution and model prices, and the only live model available when this was built was a 3-billion-parameter local model on a laptop CPU (see [Live test](#live-test-local-model)). The request log, replay-friendly API and dashboard exist so you can measure it on your own data.
+## Results
+Cache threshold on Quora Question Pairs (14,885 duplicates out of 40,430 pairs):
+
+| Threshold | Precision, guard off | Precision, guard on | Recall, guard on |
+|---:|---:|---:|---:|
+| 0.88 | 0.722 | 0.734 | 0.637 |
+| 0.92 | 0.801 | 0.813 | 0.452 |
+| 0.94 | 0.844 | 0.853 | 0.341 |
+| 0.96 | 0.885 | 0.891 | 0.228 |
+| 0.98 | 0.929 | 0.933 | 0.117 |
+
+- The number and negation guard cuts false hits by 7 to 12% at the same threshold.
+- I set the default threshold to 0.95.
+- In a live run with Ollama `llama3.2:3b` (15 queries), cache hits took about 7 ms against about 4.9 s for a generated answer. This run also found two bugs (the model writing `INSUFFICIENT CONTEXT` with a space, and answers that were only `[1]`), which I fixed.
+- 60 automated tests pass.
+
+## How it was built
 
 ```mermaid
 flowchart LR
   Q[POST /v1/query] --> E[embed query]
-  E --> C{semantic cache<br/>sim ≥ threshold<br/>and guard ok?}
-  C -- hit --> R[return cached answer<br/>cost 0, log saved cost]
-  C -- miss --> SF[single-flight:<br/>identical in-flight queries wait]
+  E --> C{cache hit?}
+  C -- hit --> R[return cached answer]
+  C -- miss --> SF[single-flight]
   SF --> RET[retrieve top-k chunks]
-  RET --> RT[router: small or large tier]
+  RET --> RT[router: small or large]
   RT --> G[generate with retry + failover]
-  G --> V{valid citations<br/>or abstention?}
-  V -- invalid, small tier --> ESC[escalate to large tier] --> G
-  V -- valid --> S[store in cache, log cost + latency]
-  V -- invalid after escalation --> ERR[502, nothing cached]
+  G --> V{valid citations?}
+  V -- no, small tier --> ESC[escalate to large] --> G
+  V -- yes --> S[store in cache, log cost + latency]
 ```
 
-## Quickstart
+Prices, thresholds, router weights and prompts are stored in the database, so they can change without redeploying.
 
-```bash
-pip install -e ".[dev]"
-cp .env.example .env            # then set RC_ADMIN_API_KEY to a long random value
+## Tech stack
+Python, FastAPI, Pydantic, SQLite, fastembed (bge-small embeddings), Anthropic and OpenAI-compatible clients, Ollama, pytest, Docker.
 
-# 1. register models (prices are USD per million tokens; keys are read from the named env variable)
-ragcache models add small-m --provider anthropic --model-id <small-model-id> --tier small \
-    --input-price <usd> --output-price <usd> --api-key-env ANTHROPIC_API_KEY
-ragcache models add large-m --provider anthropic --model-id <large-model-id> --tier large \
-    --input-price <usd> --output-price <usd> --api-key-env ANTHROPIC_API_KEY
-# any OpenAI-compatible server (OpenAI, Ollama, vLLM, LM Studio) works too:
-#   --provider openai_compat --base-url http://localhost:11434/v1
-
-# 2. ingest documents (.txt / .md files or folders)
-ragcache ingest kb ./docs
-
-# 3. run
-ragcache serve                  # http://127.0.0.1:8000, dashboard at /dashboard
-```
-
-```bash
-curl -s localhost:8000/v1/query -H 'content-type: application/json' \
-  -d '{"collection": "kb", "query": "How long does shipping take?"}'
-```
-
-Response shape (values are illustrative):
-
-```json
-{
-  "answer": "Standard shipping takes 5 business days [1].",
-  "abstained": false,
-  "citations": [{"n": 1, "document": "docs/shipping.md", "title": "shipping"}],
-  "cache": {"hit": false, "similarity": 0.61},
-  "routing": {"tier": "small", "model": "small-m", "escalated": false, "reasons": ["simple, well-supported query"]},
-  "usage": {"input_tokens": 912, "output_tokens": 41, "cost_usd": 0.0011, "saved_cost_usd": 0.0},
-  "latency_ms": 1210.4
-}
-```
-
-Ask the same question again and `cache.hit` is `true`, `cost_usd` is `0`, and `saved_cost_usd` is what the original call cost.
-
-## Design decisions worth knowing
-
-| Decision | Why |
-|---|---|
-| Cache key is the query embedding **plus** (collection, corpus version) | Re-ingesting a document bumps the version in the same transaction, so stale answers can never be served. |
-| Numbers/negation **guard** on cache hits | Embedding models score "30 days" and "60 days" as near-identical. The guard removes a measurable share of false hits (see Evaluation). |
-| Default threshold **0.95**, not 0.9 | Measured: at 0.92 only about 80% of served hits were genuine duplicates on Quora Question Pairs. |
-| Deterministic router, not a learned one | A learned router needs outcome labels that do not exist until the system has run; a transparent rule is auditable and tunable at runtime. The escalation log is the data you would train one on. |
-| Validation before caching | Abstentions and answers without valid citations are never cached, so one bad generation cannot be replayed to everyone. |
-| Prices, thresholds, router weights and prompts live in the **database** | Tunable via `PUT /v1/admin/config` or `ragcache config set` with no redeploy. Secrets stay in environment variables. |
-| Single-flight on misses | N identical concurrent queries cost one LLM call (tested with 6 threads). |
-| SQLite + in-memory exact search | Zero infrastructure and correct. The cache and retriever sit behind small classes; swap in pgvector or Qdrant when the corpus or cache outgrows one machine. |
-
-Full specification, failure matrix, threat model and decision records: [`docs/SPEC.md`](docs/SPEC.md).
-
-## Configuration
-
-| Where | What | Change requires |
-|---|---|---|
-| Environment (`RC_*`, see `.env.example`) | DB path, embedding model, admin and query API keys, LLM timeout/retries | restart |
-| `models` table (`ragcache models …`, `/v1/admin/models`) | provider, model id, tier, base URL, **key env-var name**, prices, priority, active | nothing |
-| `runtime_config` table (`ragcache config …`, `PUT /v1/admin/config`) | cache threshold, TTL, size and guard; top-k and chunking; router weights and threshold; multi-hop cue patterns; escalation; system prompt; query-text logging | nothing (applied within seconds) |
-
-Runtime values are validated on write: a bad regex, an out-of-range threshold or a prompt missing its placeholder is rejected with 422 and nothing is persisted.
-
-## API
-
-| Method | Route | Auth | Purpose |
-|---|---|---|---|
-| POST | `/v1/query` | optional `RC_QUERY_API_KEY` | answer a question |
-| POST | `/v1/collections/{name}/documents` | admin | idempotent upsert of a document |
-| GET / PUT | `/v1/admin/config` | admin | read / change runtime config |
-| GET / POST | `/v1/admin/models` | admin | list / upsert models |
-| GET | `/v1/metrics/summary?window_seconds=` | admin | the numbers behind the dashboard |
-| GET | `/dashboard` | page is public, data needs the admin key | cost and latency dashboard |
-| GET | `/healthz`, `/readyz` | none | liveness, database readiness |
-
-## Evaluation
-
-### Cache threshold: measured on 40,430 labelled question pairs
-
-`ragcache eval-threshold` embeds labelled duplicate and non-duplicate pairs with the real embedding model (`BAAI/bge-small-en-v1.5`) and reports, per threshold, what fraction of the *served* hits would have been correct. Data: the validation split of **Quora Question Pairs** (via GLUE), 14,885 duplicates out of 40,430 pairs (`scripts/download_qqp.py`). Raw output: [`docs/qqp_threshold_eval_raw.txt`](docs/qqp_threshold_eval_raw.txt).
-
-| Threshold | Precision, guard off | Precision, guard on | Recall, guard on | False hits served, guard off → on |
-|---:|---:|---:|---:|---:|
-| 0.88 | 0.722 | 0.734 | 0.637 | 3,882 → 3,429 |
-| 0.92 | 0.801 | 0.813 | 0.452 | 1,729 → 1,552 |
-| 0.94 | 0.844 | 0.853 | 0.341 | 966 → 876 |
-| 0.96 | 0.885 | 0.891 | 0.228 | 452 → 416 |
-| 0.98 | 0.929 | 0.933 | 0.117 | 134 → 125 |
-
-What this says:
-
-- **Semantic caching with a small embedding model is a precision problem.** Even at 0.96, about 1 in 9 served hits is a false duplicate by QQP's labels. QQP labels are strict and somewhat noisy, and a wrong hit in a narrow support knowledge base is often milder than in QQP's open domain, but the direction is clear: do not run a low threshold.
-- **The numbers/negation guard helps modestly**: 0.4 to 1.2 points of precision and 7 to 12% fewer false hits at the same threshold, because most QQP false duplicates differ in meaning rather than in digits.
-- **The consequence is a real trade-off:** in a local smoke test with this model, "How long does shipping take?" vs "how many days until my order is delivered by standard shipping" scored 0.83, so at 0.95 the cache mainly serves near-verbatim repeats and normalised variants, not free paraphrases. Lowering the threshold to catch more paraphrases costs precision, exactly as the table shows. Pick the point your use case can afford.
-- The default is therefore **0.95**. If you need more precision than the embedding alone gives, add a second-stage verifier (cross-encoder or a small-LLM judge) before serving a hit. That is on the roadmap and not implemented.
-
-Run it on *your* queries before trusting any threshold, including this one: `ragcache eval-threshold your_pairs.jsonl --min-precision 0.98`.
-
-### Live test (local model)
-
-One real end-to-end run: this service against **Ollama serving `llama3.2:3b`** (CPU only, a laptop with an integrated GPU), real embeddings, 4 short documents, 15 queries, both tiers pointed at the same model with prices set to 0.
-
-- The real OpenAI-compatible client, retrieval, routing, caching, validation and request log worked together.
-- **Cache hits** (repeats and a case variant) were served in about **7 ms median, against about 4.9 s median for a generated answer** on this machine. Hit rate on this tiny repeated set: 4 of 12 successful requests; it says nothing about real traffic.
-- **The live run found two real bugs, now fixed and covered by tests:** the model wrote `INSUFFICIENT CONTEXT` (a space) instead of the requested `INSUFFICIENT_CONTEXT`, which made unanswerable questions fail instead of abstaining; and answers that were only `[1]` were accepted as valid. Abstention matching is now lenient, answers need real text besides citation markers (`min_answer_chars`), and a rejected answer's first characters are recorded in the error for debugging.
-- **After the fixes, 3 of the 15 requests still returned 502**: two where the 3B model answered with just `[1]`, and one cut off by the 120-token cap I set for the test before it reached a citation. That is the validator doing its job on a weak model, not a hidden success.
-- **Escalation to the large tier was not exercised live** because both tiers were the same model.
-
-This is a sanity check of the integration, not an evaluation: 15 queries and a small model say nothing about answer quality, cost savings or hosted-model latency.
-
-### What is tested
-
-60 automated tests (`pytest`):
-
-- cache hit, miss, guard, expiry, eviction and persistence across restart;
-- corpus-version invalidation;
-- router decisions;
-- miss-then-hit cost accounting against the price table;
-- escalation cost (both calls are billed);
-- abstentions and invalid answers never cached;
-- provider retry and cross-tier failover;
-- total failure returns 502 and logs an `error` row;
-- concurrent single-flight;
-- runtime-config validation;
-- authentication on every admin route, metrics and the dashboard;
-- the real Anthropic and OpenAI-compatible clients against a local HTTP server speaking each wire format (request shape, auth headers, response parsing, 429/5xx retryable vs 4xx non-retryable, connection failure).
-
-One test uses the real embedding model (`pytest -m embedding`). The fake LLM and a hashing embedder exist **only** under `tests/`.
-
-### What is not verified
-
-- **The Anthropic client against the real API.** It is tested against a local server imitating the wire format only. The OpenAI-compatible client has been run live against Ollama (below).
-- **Cost and p95-latency savings on real traffic**, and **answer quality under routing.** Measuring quality needs labelled answers and an LLM judge or human review; the request log gives you everything else.
-
-## Limitations and roadmap
-
-- Exact (brute-force) in-memory vector search: fine up to roughly hundreds of thousands of vectors per process; use an ANN index beyond that.
-- Single process, SQLite. Multiple replicas need a shared database (Postgres) and a shared cache index.
-- The cache is shared by all callers of a collection. Do not put per-user-permissioned content in a cached collection (see the sibling project `permission-aware-rag`).
-- Roadmap: second-stage hit verifier, a learned router trained from the escalation log, streaming responses.
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-pytest -q                       # add -m "not embedding" to skip the model download
-ruff check src tests && ruff format --check src tests
-mypy src
-pip install pyarrow && python scripts/download_qqp.py && ragcache eval-threshold data/qqp_validation.jsonl
-```
-
-A `Dockerfile` is included (single container, non-root, SQLite on a `/data` volume). It was not built or run in the environment this project was developed in, so treat it as untested until your CI builds it.
-
-## License
-
-MIT
+## Data
+Quora Question Pairs (via GLUE).
